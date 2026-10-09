@@ -66,7 +66,6 @@ class MainActivity : AppCompatActivity() {
     private val known = HashSet<String>()
     private val lastSize = HashMap<String, Long>()
 
-    // قائمة البث التلقائية
     private val playlist = CopyOnWriteArrayList<Seg>()
 
     private var arrived = 0
@@ -199,7 +198,6 @@ class MainActivity : AppCompatActivity() {
         tvStreamUrl = TextView(this).apply {
             setTextColor(Color.parseColor("#FFD54F"))
             textSize = 13f
-            text = "رابط القناة الأوتوماتيكي: http://192.168.43.1:8080/live.m3u"
             setPadding(0, 0, 0, dp(12))
         }
 
@@ -339,7 +337,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateStatus() {
-        tvStatus.text = "القناة المباشرة جاهزة | المقاطع: ${playlist.size} | شُغّل: $played | وصل: $arrived"
+        val currentIp = getLocalIpAddress()
+        tvStreamUrl.text = "رابط القناة الحقيقي: http://$currentIp:$PORT/live.m3u"
+        tvStatus.text = "السيرفر يعمل على $currentIp | المقاطع: ${playlist.size} | شُغّل: $played | وصل: $arrived"
     }
 
     private fun start() {
@@ -461,13 +461,13 @@ class MainActivity : AppCompatActivity() {
     private fun getLocalIpAddress(): String {
         return try {
             val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-            Formatter.formatIpAddress(wifiManager.connectionInfo.ipAddress)
+            val ip = Formatter.formatIpAddress(wifiManager.connectionInfo.ipAddress)
+            if (ip == "0.0.0.0" || ip.isEmpty()) "192.168.43.1" else ip
         } catch (e: Exception) {
             "192.168.43.1"
         }
     }
 
-    // --- سيرفر توليد قائمة البث المباشر المتموج المباشر (Auto Live M3U Stream) ---
     private fun startLocalHttpServer() {
         try {
             localServer = LocalHttpServer(PORT)
@@ -481,21 +481,34 @@ class MainActivity : AppCompatActivity() {
         override fun serve(session: IHTTPSession): Response {
             val uri = session.uri
 
-            // إنشاء ملف قائمة تشغيل M3U تلقائي للبث
-            if (uri.endsWith(".m3u") || uri.endsWith(".m3u8")) {
-                val m3uBuilder = StringBuilder()
-                m3uBuilder.append("#EXTM3U\n")
+            // توليد ملف M3U مقياسي صالح دائماً للـ VLC والمستقبلات
+            if (uri.endsWith(".m3u") || uri.endsWith(".m3u8") || uri == "/live") {
                 val ip = getLocalIpAddress()
+                val sb = java.lang.StringBuilder()
+                sb.append("#EXTM3U\n")
 
-                playlist.forEachIndexed { idx, seg ->
-                    m3uBuilder.append("#EXTINF:-1, WhatsApp Video Part ${idx + 1}\n")
-                    m3uBuilder.append("http://$ip:$PORT/video/$idx\n")
+                if (playlist.isEmpty()) {
+                    // إذا كانت القائمة فارغة، نرجع عنصراً تجريبياً حتى لا يفشل VLC
+                    sb.append("#EXTINF:-1, Waiting for WhatsApp videos...\n")
+                    sb.append("http://$ip:$PORT/ping\n")
+                } else {
+                    playlist.forEachIndexed { idx, seg ->
+                        sb.append("#EXTINF:-1, ${seg.name}\n")
+                        sb.append("http://$ip:$PORT/video/$idx\n")
+                    }
                 }
 
-                return newFixedLengthResponse(Response.Status.OK, "application/x-mpegurl", m3uBuilder.toString())
+                val res = newFixedLengthResponse(Response.Status.OK, "text/plain", sb.toString())
+                res.addHeader("Access-Control-Allow-Origin", "*")
+                return res
             }
 
-            // تقديم ملف المقطع عند طلب الرسيفر
+            if (uri == "/ping") {
+                val res = newFixedLengthResponse(Response.Status.OK, "text/plain", "Server is live")
+                res.addHeader("Access-Control-Allow-Origin", "*")
+                return res
+            }
+
             if (uri.startsWith("/video/")) {
                 val idxStr = uri.substringAfter("/video/")
                 val idx = idxStr.toIntOrNull() ?: 0
@@ -503,7 +516,10 @@ class MainActivity : AppCompatActivity() {
                     val seg = playlist[idx]
                     return try {
                         val inputStream: InputStream? = contentResolver.openInputStream(seg.uri)
-                        newChunkedResponse(Response.Status.OK, "video/mp4", inputStream)
+                        val res = newChunkedResponse(Response.Status.OK, "video/mp4", inputStream)
+                        res.addHeader("Access-Control-Allow-Origin", "*")
+                        res.addHeader("Accept-Ranges", "bytes")
+                        res
                     } catch (e: Exception) {
                         newFixedLengthResponse(Response.Status.NOT_FOUND, MIME_PLAINTEXT, "File Error")
                     }
