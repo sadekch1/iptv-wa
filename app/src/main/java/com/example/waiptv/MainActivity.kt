@@ -1,8 +1,6 @@
 package com.example.waiptv
 
-import android.content.ActivityNotFoundException
 import android.content.Context
-import android.content.Intent
 import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
@@ -10,13 +8,12 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.DocumentsContract
 import android.provider.DocumentsContract.Document
-import android.text.InputType
+import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.CheckBox
-import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -27,6 +24,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
@@ -37,15 +35,11 @@ class MainActivity : AppCompatActivity() {
     private data class Seg(val uri: Uri, val name: String, val modified: Long, val size: Long)
 
     private lateinit var player: ExoPlayer
-    private lateinit var etBot: EditText
-    private lateinit var etCmd: EditText
-    private lateinit var etStop: EditText
-    private lateinit var etUrl: EditText
-    private lateinit var etMin: EditText
-    private lateinit var etSeg: EditText
+    private lateinit var playerView: PlayerView
     private lateinit var cbDelete: CheckBox
     private lateinit var tvStatus: TextView
     private lateinit var tvFolder: TextView
+    private lateinit var btnResize: Button
 
     private val prefs by lazy { getSharedPreferences("waiptv", Context.MODE_PRIVATE) }
     private val ui = Handler(Looper.getMainLooper())
@@ -53,12 +47,20 @@ class MainActivity : AppCompatActivity() {
     private var watcher: ScheduledFuture<*>? = null
 
     private var treeUri: Uri? = null
-
     private val known = HashSet<String>()
     private val lastSize = HashMap<String, Long>()
 
     private var arrived = 0
     private var played = 0
+
+    // أنماط ملاءمة الشاشة
+    private val resizeModes = arrayOf(
+        AspectRatioFrameLayout.RESIZE_MODE_FIT to "ملاءمة (Fit)",
+        AspectRatioFrameLayout.RESIZE_MODE_FILL to "تعبئة الشاشة (Fill)",
+        AspectRatioFrameLayout.RESIZE_MODE_ZOOM to "تكبير/قص (Zoom)",
+        AspectRatioFrameLayout.RESIZE_MODE_STRETCH to "تمطيط (Stretch)"
+    )
+    private var currentResizeIdx = 0
 
     private val pickFolder =
         registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
@@ -106,7 +108,7 @@ class MainActivity : AppCompatActivity() {
         })
 
         prefs.getString("tree", null)?.let { treeUri = Uri.parse(it) }
-        setContentView(buildUi())
+        setContentView(buildModernUi())
         showFolder()
         updateStatus()
     }
@@ -120,78 +122,75 @@ class MainActivity : AppCompatActivity() {
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
-    private fun field(hint: String, type: Int, text: String = ""): EditText =
-        EditText(this).apply {
-            this.hint = hint
-            inputType = type
-            setText(text)
-            setSingleLine()
-        }
-
-    private fun button(label: String, onClick: () -> Unit): Button =
-        Button(this).apply {
-            text = label
-            setOnClickListener { onClick() }
-        }
-
-    private fun buildUi(): View {
+    private fun buildModernUi(): View {
         val match = ViewGroup.LayoutParams.MATCH_PARENT
         val wrap = ViewGroup.LayoutParams.WRAP_CONTENT
 
-        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.parseColor("#121212")) // خلفية داكنة حديثة
+        }
 
-        val pv = PlayerView(this).apply {
+        // 1) مشغّل الفيديو
+        playerView = PlayerView(this).apply {
             this.player = this@MainActivity.player
             setBackgroundColor(Color.BLACK)
+            resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
         }
-        root.addView(pv, LinearLayout.LayoutParams(match, dp(220)))
+        root.addView(playerView, LinearLayout.LayoutParams(match, dp(250)))
 
+        // 2) جسم التحكم والأزرار
         val form = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(8), dp(16), dp(24))
+            setPadding(dp(20), dp(16), dp(20), dp(20))
         }
 
-        etBot = field(
-            "رقم المستلِم/البوت (فارغ = اختيار جهة اتصال)",
-            InputType.TYPE_CLASS_PHONE,
-            prefs.getString("bot", "") ?: ""
-        )
-        etCmd = field(
-            "قالب النص/الأمر: استخدم {url} {min} {seg}",
-            InputType.TYPE_CLASS_TEXT,
-            prefs.getString("cmd", ".stream {url} {min} {seg}") ?: ""
-        )
-        etStop = field(
-            "أمر الإيقاف (اتركه فارغاً إن لم يوجد)",
-            InputType.TYPE_CLASS_TEXT,
-            prefs.getString("stop", ".stopstream") ?: ""
-        )
-        etUrl = field(
-            "رابط البث أو اسم المحتوى المطلوب",
-            InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
-        )
-        etMin = field("المدة الكلية بالدقائق ({min})", InputType.TYPE_CLASS_NUMBER, "60")
-        etSeg = field("مدة كل جزء بالدقائق ({seg})", InputType.TYPE_CLASS_NUMBER, "1")
+        tvFolder = TextView(this).apply {
+            setTextColor(Color.parseColor("#BBBBBB"))
+            textSize = 13f
+            setPadding(0, 0, 0, dp(12))
+        }
+
+        // زر اختيار المجلد
+        val btnPick = createStyledButton("📁 اختيار المجلد المراقَب", "#2196F3") {
+            pickFolder.launch(null)
+        }
+
+        // زر تغيير نمط الأبعاد ملء الشاشة
+        btnResize = createStyledButton("📺 الأبعاد: ملاءمة (Fit)", "#424242") {
+            toggleResizeMode()
+        }
+
+        // زر بدء المراقبة
+        val btnStart = createStyledButton("▶ بدء المراقبة والتشغيل", "#4CAF50") {
+            start()
+        }
+
+        // زر الإيقاف
+        val btnStop = createStyledButton("⏹ إيقاف المراقبة", "#F44336") {
+            stop()
+        }
 
         cbDelete = CheckBox(this).apply {
-            text = "حذف أي ملف فور الانتهاء من تشغيله"
+            text = "حذف الملفات تلقائياً بعد التشغيل"
+            setTextColor(Color.WHITE)
             isChecked = true
+            setPadding(dp(4), dp(8), 0, dp(12))
         }
 
-        tvFolder = TextView(this).apply { setPadding(0, dp(8), 0, dp(4)) }
-        tvStatus = TextView(this).apply { setPadding(0, dp(8), 0, 0) }
+        tvStatus = TextView(this).apply {
+            setTextColor(Color.parseColor("#00E676"))
+            textSize = 14f
+            gravity = Gravity.CENTER
+            setPadding(0, dp(12), 0, 0)
+        }
 
-        form.addView(etBot)
-        form.addView(etCmd)
-        form.addView(etStop)
-        form.addView(etUrl)
-        form.addView(etMin)
-        form.addView(etSeg)
-        form.addView(cbDelete)
-        form.addView(button("1) اختيار المجلد (Sent أو WhatsApp Documents)") { pickFolder.launch(null) })
+        form.addView(btnPick)
         form.addView(tvFolder)
-        form.addView(button("2) بدء مراقبة المجلد وتشغيل البث") { start() })
-        form.addView(button("إيقاف") { stop() })
+        form.addView(btnResize)
+        form.addView(cbDelete)
+        form.addView(btnStart)
+        form.addView(btnStop)
         form.addView(tvStatus)
 
         root.addView(
@@ -201,70 +200,54 @@ class MainActivity : AppCompatActivity() {
         return root
     }
 
-    private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+    private fun createStyledButton(label: String, colorHex: String, onClick: () -> Unit): Button {
+        return Button(this).apply {
+            text = label
+            setTextColor(Color.WHITE)
+            textSize = 15f
+            setBackgroundColor(Color.parseColor(colorHex))
+            setOnClickListener { onClick() }
+            val lp = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+            lp.setMargins(0, 0, 0, dp(10))
+            layoutParams = lp
+        }
+    }
+
+    private fun toggleResizeMode() {
+        currentResizeIdx = (currentResizeIdx + 1) % resizeModes.size
+        val (mode, modeName) = resizeModes[currentResizeIdx]
+        playerView.resizeMode = mode
+        btnResize.text = "📺 الأبعاد: $modeName"
+        toast("تم تغيير الوضع إلى: $modeName")
+    }
+
+    private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
 
     private fun showFolder() {
         val t = treeUri
         tvFolder.text = if (t == null) {
-            "لم يُختر مجلد بعد"
+            "لم يتم اختيار مجلد حتى الآن"
         } else {
-            "المجلد المراقَب: " + DocumentsContract.getTreeDocumentId(t).substringAfter(':')
+            "المجلد الحالي: " + DocumentsContract.getTreeDocumentId(t).substringAfter(':')
         }
     }
 
     private fun updateStatus() {
-        tvStatus.text = "في الانتظار: ${player.mediaItemCount}  |  شُغّل: $played  |  وصل: $arrived"
+        tvStatus.text = "الانتظار: ${player.mediaItemCount}  |  شُغّل: $played  |  وصل: $arrived"
     }
 
     private fun start() {
-        val tpl = etCmd.text.toString().trim()
-        val url = etUrl.text.toString().trim()
-        val min = etMin.text.toString().toIntOrNull() ?: 0
-        val seg = etSeg.text.toString().toIntOrNull() ?: 0
-
-        if (treeUri == null) return toast("اختر مجلد الاستقبال أولاً")
-
-        prefs.edit()
-            .putString("cmd", tpl)
-            .putString("stop", etStop.text.toString().trim())
-            .apply()
-
-        val cmd = tpl
-            .replace("{url}", url)
-            .replace("{min}", min.toString())
-            .replace("{seg}", seg.toString())
-
+        if (treeUri == null) return toast("اختر مجلد التنزيل أولاً")
         startWatching()
-        if (cmd.isNotEmpty()) {
-            sendViaWhatsApp(cmd)
-        }
+        toast("بدأت مراقبة المجلد بنجاح")
     }
 
     private fun stop() {
-        val stopCmd = etStop.text.toString().trim()
-        if (stopCmd.isNotEmpty()) {
-            sendViaWhatsApp(stopCmd)
-            exec.schedule({ watcher?.cancel(false) }, 60, TimeUnit.SECONDS)
-        } else {
-            watcher?.cancel(false)
-        }
-    }
-
-    private fun sendViaWhatsApp(text: String) {
-        val num = etBot.text.toString().filter { it.isDigit() }
-        prefs.edit().putString("bot", num).apply()
-
-        val uri = Uri.parse("https://wa.me/$num?text=" + Uri.encode(text))
-        for (pkg in listOf("com.whatsapp", "com.whatsapp.w4b", null)) {
-            try {
-                startActivity(Intent(Intent.ACTION_VIEW, uri).apply {
-                    if (pkg != null) setPackage(pkg)
-                })
-                return
-            } catch (_: ActivityNotFoundException) {
-            }
-        }
-        toast("تطبيق واتساب غير مثبّت")
+        watcher?.cancel(false)
+        toast("تم إيقاف المراقبة")
     }
 
     private fun startWatching() {
@@ -274,7 +257,6 @@ class MainActivity : AppCompatActivity() {
         played = 0
         updateStatus()
 
-        // تفريغ السجلات للبدء بقراءة أي ملفات متواجدة داخل المجلد فوراً
         known.clear()
         lastSize.clear()
 
@@ -286,7 +268,6 @@ class MainActivity : AppCompatActivity() {
             val tree = treeUri ?: return
             val fresh = listSegmentsRecursive(tree).filter { it.uri.toString() !in known }
 
-            // التثبت من اكتمال التنزيل عبر ثبات الحجم بين فحصين
             val ready = fresh.filter { it.size > 0 && lastSize[it.uri.toString()] == it.size }
             fresh.forEach { lastSize[it.uri.toString()] = it.size }
 
@@ -296,7 +277,7 @@ class MainActivity : AppCompatActivity() {
                 ui.post { enqueue(s) }
             }
         } catch (e: Exception) {
-            ui.post { tvStatus.text = "خطأ أثناء قراءة المجلد: ${e.message}" }
+            ui.post { tvStatus.text = "خطأ قراءة المجلد: ${e.message}" }
         }
     }
 
@@ -332,9 +313,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * استعلام يجلب كافة الملفات بما في ذلك الملفات الموجودة داخل مجلدات فرعية مثل Sent
-     */
     private fun listSegmentsRecursive(tree: Uri): List<Seg> {
         val out = ArrayList<Seg>()
         val parentId = DocumentsContract.getTreeDocumentId(tree)
@@ -358,10 +336,8 @@ class MainActivity : AppCompatActivity() {
                 val mime = c.getString(4) ?: ""
 
                 if (mime == Document.MIME_TYPE_DIR) {
-                    // الانتقال ودخول المجلدات الفرعية (مثل مجلد Sent)
                     scanFolder(tree, docId, out)
                 } else if (!name.startsWith(".")) {
-                    // حفظ كل الملفات بغض النظر عن النوع أو الامتداد
                     out.add(
                         Seg(
                             DocumentsContract.buildDocumentUriUsingTree(tree, docId),
