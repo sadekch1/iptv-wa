@@ -26,7 +26,6 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
@@ -37,12 +36,7 @@ import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import fi.iki.elonen.NanoHTTPD
 import java.io.InputStream
-import java.io.OutputStreamWriter
-import java.net.DatagramPacket
-import java.net.DatagramSocket
-import java.net.HttpURLConnection
-import java.net.InetAddress
-import java.net.URL
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
@@ -51,7 +45,6 @@ import java.util.concurrent.TimeUnit
 class MainActivity : AppCompatActivity() {
 
     private data class Seg(val uri: Uri, val name: String, val modified: Long, val size: Long)
-    private data class DlnaDevice(val name: String, val controlUrl: String)
 
     private lateinit var player: ExoPlayer
     private lateinit var playerView: PlayerView
@@ -60,9 +53,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var cbDelete: CheckBox
     private lateinit var tvStatus: TextView
     private lateinit var tvFolder: TextView
+    private lateinit var tvStreamUrl: TextView
     private lateinit var btnResize: Button
     private lateinit var btnFullscreen: Button
-    private lateinit var btnDlnaCast: Button
 
     private val prefs by lazy { getSharedPreferences("waiptv", Context.MODE_PRIVATE) }
     private val ui = Handler(Looper.getMainLooper())
@@ -73,13 +66,15 @@ class MainActivity : AppCompatActivity() {
     private val known = HashSet<String>()
     private val lastSize = HashMap<String, Long>()
 
+    // قائمة البث التلقائية
+    private val playlist = CopyOnWriteArrayList<Seg>()
+
     private var arrived = 0
     private var played = 0
     private var isFullScreen = false
 
     private var localServer: LocalHttpServer? = null
     private val PORT = 8080
-    private var selectedDevice: DlnaDevice? = null
 
     private val resizeModes = arrayOf(
         AspectRatioFrameLayout.RESIZE_MODE_FILL to "تعبئة الشاشة (Fill)",
@@ -198,15 +193,18 @@ class MainActivity : AppCompatActivity() {
         tvFolder = TextView(this).apply {
             setTextColor(Color.parseColor("#BBBBBB"))
             textSize = 13f
+            setPadding(0, 0, 0, dp(8))
+        }
+
+        tvStreamUrl = TextView(this).apply {
+            setTextColor(Color.parseColor("#FFD54F"))
+            textSize = 13f
+            text = "رابط القناة الأوتوماتيكي: http://192.168.43.1:8080/live.m3u"
             setPadding(0, 0, 0, dp(12))
         }
 
         val btnPick = createStyledButton("📁 اختيار المجلد المراقَب", "#2196F3") {
             pickFolder.launch(null)
-        }
-
-        btnDlnaCast = createStyledButton("🔍 البحث عن جهاز Geant / TV", "#FF9800") {
-            searchDlnaDevices()
         }
 
         btnFullscreen = createStyledButton("⛶ ملء الشاشة المباشر (Full Screen)", "#9C27B0") {
@@ -217,11 +215,11 @@ class MainActivity : AppCompatActivity() {
             toggleResizeMode()
         }
 
-        val btnStart = createStyledButton("▶ بدء المراقبة والتشغيل", "#4CAF50") {
+        val btnStart = createStyledButton("▶ بدء البث المباشر التلقائي", "#4CAF50") {
             start()
         }
 
-        val btnStop = createStyledButton("⏹ إيقاف المراقبة", "#F44336") {
+        val btnStop = createStyledButton("⏹ إيقاف البث", "#F44336") {
             stop()
         }
 
@@ -241,7 +239,7 @@ class MainActivity : AppCompatActivity() {
 
         form.addView(btnPick)
         form.addView(tvFolder)
-        form.addView(btnDlnaCast)
+        form.addView(tvStreamUrl)
         form.addView(btnFullscreen)
         form.addView(btnResize)
         form.addView(cbDelete)
@@ -341,19 +339,19 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateStatus() {
-        val devName = selectedDevice?.name ?: "غير متصل"
-        tvStatus.text = "الجهاز: $devName | الانتظار: ${player.mediaItemCount} | شُغّل: $played | وصل: $arrived"
+        tvStatus.text = "القناة المباشرة جاهزة | المقاطع: ${playlist.size} | شُغّل: $played | وصل: $arrived"
     }
 
     private fun start() {
         if (treeUri == null) return toast("اختر مجلد التنزيل أولاً")
         startWatching()
-        toast("بدأت مراقبة المجلد بنجاح")
+        toast("بدأ السيرفر المباشر بالعمل أوتوماتيكياً")
     }
 
     private fun stop() {
         watcher?.cancel(false)
-        toast("تم إيقاف المراقبة")
+        playlist.clear()
+        toast("تم إيقاف البث")
     }
 
     private fun startWatching() {
@@ -361,6 +359,7 @@ class MainActivity : AppCompatActivity() {
         player.clearMediaItems()
         arrived = 0
         played = 0
+        playlist.clear()
         updateStatus()
 
         known.clear()
@@ -389,8 +388,6 @@ class MainActivity : AppCompatActivity() {
 
     private fun enqueue(s: Seg) {
         val wasEnded = player.playbackState == Player.STATE_ENDED
-        val localUrl = "http://${getLocalIpAddress()}:$PORT/stream/${Uri.encode(s.uri.toString())}"
-
         player.addMediaItem(
             MediaItem.Builder()
                 .setUri(s.uri)
@@ -398,10 +395,7 @@ class MainActivity : AppCompatActivity() {
                 .build()
         )
         arrived++
-
-        if (selectedDevice != null) {
-            exec.execute { sendToDlnaDevice(selectedDevice!!, localUrl) }
-        }
+        playlist.add(s)
 
         if (player.playbackState == Player.STATE_IDLE) player.prepare()
         if (wasEnded) player.seekToDefaultPosition(player.mediaItemCount - 1)
@@ -464,147 +458,16 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // --- آلية البحث عن الأجهزة والأمر التلقائي (DLNA Controller) ---
-
-    private fun searchDlnaDevices() {
-        toast("جاري البحث عن أجهزة DLNA...")
-        val devices = ArrayList<DlnaDevice>()
-
-        exec.execute {
-            try {
-                val ssdpQuery = "M-SEARCH * HTTP/1.1\r\n" +
-                        "HOST: 239.255.255.250:1900\r\n" +
-                        "MAN: \"ssdp:discover\"\r\n" +
-                        "MX: 3\r\n" +
-                        "ST: urn:schemas-upnp-org:service:AVTransport:1\r\n\r\n"
-
-                val socket = DatagramSocket()
-                socket.soTimeout = 3000
-                val group = InetAddress.getByName("239.255.255.250")
-                val packet = DatagramPacket(ssdpQuery.toByteArray(), ssdpQuery.length, group, 1900)
-                socket.send(packet)
-
-                val buf = ByteArray(1024)
-                val rxPacket = DatagramPacket(buf, buf.size)
-                
-                val startTime = System.currentTimeMillis()
-                while (System.currentTimeMillis() - startTime < 3000) {
-                    try {
-                        socket.receive(rxPacket)
-                        val resp = String(rxPacket.data, 0, rxPacket.length)
-                        if (resp.contains("LOCATION:")) {
-                            val loc = resp.substringAfter("LOCATION:").substringBefore("\r\n").trim()
-                            val dev = parseDeviceXml(loc)
-                            if (dev != null && !devices.contains(dev)) {
-                                devices.add(dev)
-                            }
-                        }
-                    } catch (_: Exception) {}
-                }
-                socket.close()
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
-
-            ui.post {
-                if (devices.isEmpty()) {
-                    toast("لم يتم العثور على أجهزة. تأكد من فتح DLNA في Geant")
-                } else {
-                    showDeviceSelectionDialog(devices)
-                }
-            }
-        }
-    }
-
-    private fun parseDeviceXml(xmlUrl: String): DlnaDevice? {
-        return try {
-            val url = URL(xmlUrl)
-            val conn = url.openConnection() as HttpURLConnection
-            val xmlText = conn.inputStream.bufferedReader().use { it.readText() }
-            val name = xmlText.substringAfter("<friendlyName>").substringBefore("</friendlyName>")
-            var controlUrl = xmlText.substringAfter("<serviceType>urn:schemas-upnp-org:service:AVTransport:1</serviceType>")
-                .substringAfter("<controlURL>").substringBefore("</controlURL>").trim()
-            
-            if (!controlUrl.startsWith("http")) {
-                val baseUrl = xmlUrl.substringBefore("/_display")
-                controlUrl = if (controlUrl.startsWith("/")) "$baseUrl$controlUrl" else "$baseUrl/$controlUrl"
-            }
-            DlnaDevice(name, controlUrl)
-        } catch (e: Exception) {
-            null
-        }
-    }
-
-    private fun showDeviceSelectionDialog(devices: List<DlnaDevice>) {
-        val names = devices.map { it.name }.toTypedArray()
-        AlertDialog.Builder(this)
-            .setTitle("اختر جهاز الرسيفر/الشاشة")
-            .setItems(names) { _, which ->
-                selectedDevice = devices[which]
-                btnDlnaCast.text = "📡 متصل بـ: ${selectedDevice?.name}"
-                btnDlnaCast.setBackgroundColor(Color.parseColor("#E65100"))
-                updateStatus()
-                toast("تم الاتصال بنجاح بـ ${selectedDevice?.name}")
-            }
-            .show()
-    }
-
-    private fun sendToDlnaDevice(device: DlnaDevice, videoUrl: String) {
-        try {
-            val xmlData = "<?xml version=\"1.0\" encoding=\"utf-8\"?>" +
-                    "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\">" +
-                    "<s:Body>" +
-                    "<u:SetAVTransportURI xmlns:u=\"urn:schemas-upnp-org:service:AVTransport:1\">" +
-                    "<InstanceID>0</InstanceID>" +
-                    "<CurrentURI>$videoUrl</CurrentURI>" +
-                    "<CurrentURIMetaData></CurrentURIMetaData>" +
-                    "</u:SetAVTransportURI>" +
-                    "</s:Body>" +
-                    "</s:Envelope>"
-
-            val url = URL(device.controlUrl)
-            val conn = url.openConnection() as HttpURLConnection
-            conn.requestMethod = "POST"
-            conn.setRequestProperty("Content-Type", "text/xml; charset=\"utf-8\"")
-            conn.setRequestProperty("SOAPACTION", "\"urn:schemas-upnp-org:service:AVTransport:1#SetAVTransportURI\"")
-            conn.doOutput = true
-
-            OutputStreamWriter(conn.outputStream).use { it.write(xmlData) }
-            conn.responseCode // إرسال الأمر
-
-            // إرسال أمر التشغيل (Play)
-            val playXml = "<?xml version=\"1.0\" encoding=\"utf-8\"?>" +
-                    "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\">" +
-                    "<s:Body>" +
-                    "<u:Play xmlns:u=\"urn:schemas-upnp-org:service:AVTransport:1\">" +
-                    "<InstanceID>0</InstanceID>" +
-                    "<Speed>1</Speed>" +
-                    "</u:Play>" +
-                    "</s:Body>" +
-                    "</s:Envelope>"
-
-            val playConn = url.openConnection() as HttpURLConnection
-            playConn.requestMethod = "POST"
-            playConn.setRequestProperty("Content-Type", "text/xml; charset=\"utf-8\"")
-            playConn.setRequestProperty("SOAPACTION", "\"urn:schemas-upnp-org:service:AVTransport:1#Play\"")
-            playConn.doOutput = true
-            OutputStreamWriter(playConn.outputStream).use { it.write(playXml) }
-            playConn.responseCode
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-    }
-
     private fun getLocalIpAddress(): String {
         return try {
             val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
             Formatter.formatIpAddress(wifiManager.connectionInfo.ipAddress)
         } catch (e: Exception) {
-            "192.168.43.1" // IP الافتراضي للهوتسبوت في الأندرويد
+            "192.168.43.1"
         }
     }
 
-    // --- سيرفر الـ HTTP المحلي ---
+    // --- سيرفر توليد قائمة البث المباشر المتموج المباشر (Auto Live M3U Stream) ---
     private fun startLocalHttpServer() {
         try {
             localServer = LocalHttpServer(PORT)
@@ -617,13 +480,37 @@ class MainActivity : AppCompatActivity() {
     private inner class LocalHttpServer(port: Int) : NanoHTTPD(port) {
         override fun serve(session: IHTTPSession): Response {
             val uri = session.uri
-            val segmentUri = Uri.parse(Uri.decode(uri.substringAfter("/stream/")))
-            return try {
-                val inputStream: InputStream? = contentResolver.openInputStream(segmentUri)
-                newChunkedResponse(Response.Status.OK, "video/mp4", inputStream)
-            } catch (e: Exception) {
-                newFixedLengthResponse(Response.Status.NOT_FOUND, MIME_PLAINTEXT, "File not found")
+
+            // إنشاء ملف قائمة تشغيل M3U تلقائي للبث
+            if (uri.endsWith(".m3u") || uri.endsWith(".m3u8")) {
+                val m3uBuilder = StringBuilder()
+                m3uBuilder.append("#EXTM3U\n")
+                val ip = getLocalIpAddress()
+
+                playlist.forEachIndexed { idx, seg ->
+                    m3uBuilder.append("#EXTINF:-1, WhatsApp Video Part ${idx + 1}\n")
+                    m3uBuilder.append("http://$ip:$PORT/video/$idx\n")
+                }
+
+                return newFixedLengthResponse(Response.Status.OK, "application/x-mpegurl", m3uBuilder.toString())
             }
+
+            // تقديم ملف المقطع عند طلب الرسيفر
+            if (uri.startsWith("/video/")) {
+                val idxStr = uri.substringAfter("/video/")
+                val idx = idxStr.toIntOrNull() ?: 0
+                if (idx < playlist.size) {
+                    val seg = playlist[idx]
+                    return try {
+                        val inputStream: InputStream? = contentResolver.openInputStream(seg.uri)
+                        newChunkedResponse(Response.Status.OK, "video/mp4", inputStream)
+                    } catch (e: Exception) {
+                        newFixedLengthResponse(Response.Status.NOT_FOUND, MIME_PLAINTEXT, "File Error")
+                    }
+                }
+            }
+
+            return newFixedLengthResponse(Response.Status.NOT_FOUND, MIME_PLAINTEXT, "Not Found")
         }
     }
 }
