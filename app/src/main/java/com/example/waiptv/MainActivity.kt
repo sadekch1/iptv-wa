@@ -1,8 +1,10 @@
 package com.example.waiptv
 
 import android.content.Context
+import android.content.pm.ActivityInfo
 import android.graphics.Color
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -11,9 +13,12 @@ import android.provider.DocumentsContract.Document
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowInsets
+import android.view.WindowInsetsController
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.CheckBox
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -38,10 +43,13 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var player: ExoPlayer
     private lateinit var playerView: PlayerView
+    private lateinit var playerContainer: FrameLayout
+    private lateinit var controlsLayout: ScrollView
     private lateinit var cbDelete: CheckBox
     private lateinit var tvStatus: TextView
     private lateinit var tvFolder: TextView
     private lateinit var btnResize: Button
+    private lateinit var btnFullscreen: Button
 
     private val prefs by lazy { getSharedPreferences("waiptv", Context.MODE_PRIVATE) }
     private val ui = Handler(Looper.getMainLooper())
@@ -54,14 +62,14 @@ class MainActivity : AppCompatActivity() {
 
     private var arrived = 0
     private var played = 0
+    private var isFullScreen = false
 
-    // أنماط ملاءمة أبعاد الشاشة المتوافقة تماماً مع Media3
     private val resizeModes = arrayOf(
         AspectRatioFrameLayout.RESIZE_MODE_FIT to "ملاءمة (Fit)",
         AspectRatioFrameLayout.RESIZE_MODE_FILL to "تعبئة الشاشة (Fill)",
         AspectRatioFrameLayout.RESIZE_MODE_ZOOM to "تكبير/قص (Zoom)",
-        AspectRatioFrameLayout.RESIZE_MODE_FIXED_WIDTH to "العرض ثابت (Fixed Width)",
-        AspectRatioFrameLayout.RESIZE_MODE_FIXED_HEIGHT to "الارتفاع ثابت (Fixed Height)"
+        AspectRatioFrameLayout.RESIZE_MODE_FIXED_WIDTH to "العرض ثابت",
+        AspectRatioFrameLayout.RESIZE_MODE_FIXED_HEIGHT to "الارتفاع ثابت"
     )
     private var currentResizeIdx = 0
 
@@ -123,6 +131,14 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
     }
 
+    override fun onBackPressed() {
+        if (isFullScreen) {
+            toggleFullScreen() // الخروج من ملء الشاشة عند الضغط على زر الرجوع
+        } else {
+            super.onBackPressed()
+        }
+    }
+
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
     private fun buildModernUi(): View {
@@ -134,13 +150,28 @@ class MainActivity : AppCompatActivity() {
             setBackgroundColor(Color.parseColor("#121212"))
         }
 
+        // الحاوية الخاصة بمشغّل الفيديو
+        playerContainer = FrameLayout(this)
+        
         playerView = PlayerView(this).apply {
             this.player = this@MainActivity.player
             setBackgroundColor(Color.BLACK)
             resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
+            
+            // زر الشاشة الكاملة الداخلي للمشغل
+            setFullscreenButtonClickListener {
+                toggleFullScreen()
+            }
         }
-        root.addView(playerView, LinearLayout.LayoutParams(match, dp(250)))
 
+        playerContainer.addView(
+            playerView,
+            FrameLayout.LayoutParams(match, match)
+        )
+
+        root.addView(playerContainer, LinearLayout.LayoutParams(match, dp(240)))
+
+        // عناصر التحكم والأزرار
         val form = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(20), dp(16), dp(20), dp(20))
@@ -154,6 +185,10 @@ class MainActivity : AppCompatActivity() {
 
         val btnPick = createStyledButton("📁 اختيار المجلد المراقَب", "#2196F3") {
             pickFolder.launch(null)
+        }
+
+        btnFullscreen = createStyledButton("⛶ ملء الشاشة (Full Screen)", "#9C27B0") {
+            toggleFullScreen()
         }
 
         btnResize = createStyledButton("📺 الأبعاد: ملاءمة (Fit)", "#424242") {
@@ -184,16 +219,18 @@ class MainActivity : AppCompatActivity() {
 
         form.addView(btnPick)
         form.addView(tvFolder)
+        form.addView(btnFullscreen)
         form.addView(btnResize)
         form.addView(cbDelete)
         form.addView(btnStart)
         form.addView(btnStop)
         form.addView(tvStatus)
 
-        root.addView(
-            ScrollView(this).apply { addView(form, LinearLayout.LayoutParams(match, wrap)) },
-            LinearLayout.LayoutParams(match, 0, 1f)
-        )
+        controlsLayout = ScrollView(this).apply {
+            addView(form, LinearLayout.LayoutParams(match, wrap))
+        }
+
+        root.addView(controlsLayout, LinearLayout.LayoutParams(match, 0, 1f))
         return root
     }
 
@@ -210,6 +247,57 @@ class MainActivity : AppCompatActivity() {
             )
             lp.setMargins(0, 0, 0, dp(10))
             layoutParams = lp
+        }
+    }
+
+    private fun toggleFullScreen() {
+        isFullScreen = !isFullScreen
+        if (isFullScreen) {
+            // إخفاء الأزرار والتحكم للبدء بالوضع الكامل
+            controlsLayout.visibility = View.GONE
+            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            
+            // توسيع المشغل ليشمل الشاشة بأكملها
+            val params = playerContainer.layoutParams as LinearLayout.LayoutParams
+            params.height = ViewGroup.LayoutParams.MATCH_PARENT
+            playerContainer.layoutParams = params
+
+            hideSystemUi()
+        } else {
+            // العودة للوضع العادي
+            controlsLayout.visibility = View.VISIBLE
+            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            
+            val params = playerContainer.layoutParams as LinearLayout.LayoutParams
+            params.height = dp(240)
+            playerContainer.layoutParams = params
+
+            showSystemUi()
+        }
+    }
+
+    private fun hideSystemUi() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            window.insetsController?.let { controller ->
+                controller.hide(WindowInsets.Type.statusBars() or WindowInsets.Type.navigationBars())
+                controller.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            window.decorView.systemUiVisibility = (
+                View.SYSTEM_UI_FLAG_FULLSCREEN
+                or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+            )
+        }
+    }
+
+    private fun showSystemUi() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            window.insetsController?.show(WindowInsets.Type.statusBars() or WindowInsets.Type.navigationBars())
+        } else {
+            @Suppress("DEPRECATION")
+            window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_VISIBLE
         }
     }
 
