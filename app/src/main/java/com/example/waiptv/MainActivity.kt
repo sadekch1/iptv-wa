@@ -4,14 +4,12 @@ import android.content.Context
 import android.content.pm.ActivityInfo
 import android.graphics.Color
 import android.net.Uri
-import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.provider.DocumentsContract
 import android.provider.DocumentsContract.Document
-import android.text.format.Formatter
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -34,9 +32,6 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
-import fi.iki.elonen.NanoHTTPD
-import java.io.InputStream
-import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
@@ -53,7 +48,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var cbDelete: CheckBox
     private lateinit var tvStatus: TextView
     private lateinit var tvFolder: TextView
-    private lateinit var tvStreamUrl: TextView
     private lateinit var btnResize: Button
     private lateinit var btnFullscreen: Button
 
@@ -66,14 +60,10 @@ class MainActivity : AppCompatActivity() {
     private val known = HashSet<String>()
     private val lastSize = HashMap<String, Long>()
 
-    private val playlist = CopyOnWriteArrayList<Seg>()
-
     private var arrived = 0
     private var played = 0
     private var isFullScreen = false
-
-    private var localServer: LocalHttpServer? = null
-    private val PORT = 8080
+    private var isBufferReady = false // شرط مساحة الأمان (5 أجزاء)
 
     private val resizeModes = arrayOf(
         AspectRatioFrameLayout.RESIZE_MODE_FILL to "تعبئة الشاشة (Fill)",
@@ -106,13 +96,13 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        
+
         supportActionBar?.hide()
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
-        startLocalHttpServer()
-
         player = ExoPlayer.Builder(this).build()
+        player.playWhenReady = false // منع البدء حتى يكتمل التخزين المؤقت
+
         player.addListener(object : Player.Listener {
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
                 ui.post { dropPlayed() }
@@ -141,7 +131,6 @@ class MainActivity : AppCompatActivity() {
         watcher?.cancel(false)
         exec.shutdownNow()
         player.release()
-        localServer?.stop()
         super.onDestroy()
     }
 
@@ -165,12 +154,12 @@ class MainActivity : AppCompatActivity() {
         }
 
         playerContainer = FrameLayout(this)
-        
+
         playerView = PlayerView(this).apply {
             this.player = this@MainActivity.player
             setBackgroundColor(Color.BLACK)
             resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FILL
-            
+
             setFullscreenButtonClickListener {
                 toggleFullScreen()
             }
@@ -192,12 +181,6 @@ class MainActivity : AppCompatActivity() {
         tvFolder = TextView(this).apply {
             setTextColor(Color.parseColor("#BBBBBB"))
             textSize = 13f
-            setPadding(0, 0, 0, dp(8))
-        }
-
-        tvStreamUrl = TextView(this).apply {
-            setTextColor(Color.parseColor("#FFD54F"))
-            textSize = 13f
             setPadding(0, 0, 0, dp(12))
         }
 
@@ -213,11 +196,11 @@ class MainActivity : AppCompatActivity() {
             toggleResizeMode()
         }
 
-        val btnStart = createStyledButton("▶ بدء البث المباشر التلقائي", "#4CAF50") {
+        val btnStart = createStyledButton("▶ بدء المراقبة والتشغيل", "#4CAF50") {
             start()
         }
 
-        val btnStop = createStyledButton("⏹ إيقاف البث", "#F44336") {
+        val btnStop = createStyledButton("⏹ إيقاف المراقبة", "#F44336") {
             stop()
         }
 
@@ -237,7 +220,6 @@ class MainActivity : AppCompatActivity() {
 
         form.addView(btnPick)
         form.addView(tvFolder)
-        form.addView(tvStreamUrl)
         form.addView(btnFullscreen)
         form.addView(btnResize)
         form.addView(cbDelete)
@@ -274,7 +256,7 @@ class MainActivity : AppCompatActivity() {
         if (isFullScreen) {
             controlsLayout.visibility = View.GONE
             requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-            
+
             val params = playerContainer.layoutParams as LinearLayout.LayoutParams
             params.height = ViewGroup.LayoutParams.MATCH_PARENT
             playerContainer.layoutParams = params
@@ -283,7 +265,7 @@ class MainActivity : AppCompatActivity() {
         } else {
             controlsLayout.visibility = View.VISIBLE
             requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-            
+
             val params = playerContainer.layoutParams as LinearLayout.LayoutParams
             params.height = dp(240)
             playerContainer.layoutParams = params
@@ -337,29 +319,38 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateStatus() {
-        val currentIp = getLocalIpAddress()
-        tvStreamUrl.text = "رابط القناة الحقيقي: http://$currentIp:$PORT/live.m3u"
-        tvStatus.text = "السيرفر يعمل على $currentIp | المقاطع: ${playlist.size} | شُغّل: $played | وصل: $arrived"
+        val count = player.mediaItemCount
+        if (!isBufferReady) {
+            tvStatus.text = "⏳ التخزين المؤقت: $count/5 أجزاء | وصل: $arrived"
+            tvStatus.setTextColor(Color.parseColor("#FFC107")) // أصفر
+        } else {
+            tvStatus.text = "▶ جاري التشغيل | المتبقي: $count | شُغّل: $played | وصل: $arrived"
+            tvStatus.setTextColor(Color.parseColor("#00E676")) // أخضر
+        }
     }
 
     private fun start() {
         if (treeUri == null) return toast("اختر مجلد التنزيل أولاً")
         startWatching()
-        toast("بدأ السيرفر المباشر بالعمل أوتوماتيكياً")
+        toast("بدأت مراقبة المجلد")
     }
 
     private fun stop() {
         watcher?.cancel(false)
-        playlist.clear()
-        toast("تم إيقاف البث")
+        player.stop()
+        player.clearMediaItems()
+        isBufferReady = false
+        updateStatus()
+        toast("تم إيقاف المراقبة")
     }
 
     private fun startWatching() {
         watcher?.cancel(false)
         player.clearMediaItems()
+        player.playWhenReady = false
+        isBufferReady = false
         arrived = 0
         played = 0
-        playlist.clear()
         updateStatus()
 
         known.clear()
@@ -387,7 +378,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun enqueue(s: Seg) {
-        val wasEnded = player.playbackState == Player.STATE_ENDED
         player.addMediaItem(
             MediaItem.Builder()
                 .setUri(s.uri)
@@ -395,11 +385,17 @@ class MainActivity : AppCompatActivity() {
                 .build()
         )
         arrived++
-        playlist.add(s)
 
-        if (player.playbackState == Player.STATE_IDLE) player.prepare()
-        if (wasEnded) player.seekToDefaultPosition(player.mediaItemCount - 1)
-        player.playWhenReady = true
+        if (player.playbackState == Player.STATE_IDLE) {
+            player.prepare()
+        }
+
+        // مساحة الأمان: انطلاق التشغيل التلقائي فور تجهيز 5 أجزاء
+        if (!isBufferReady && player.mediaItemCount >= 5) {
+            isBufferReady = true
+            player.playWhenReady = true
+        }
+
         updateStatus()
     }
 
@@ -455,78 +451,6 @@ class MainActivity : AppCompatActivity() {
                     )
                 }
             }
-        }
-    }
-
-    private fun getLocalIpAddress(): String {
-        return try {
-            val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-            val ip = Formatter.formatIpAddress(wifiManager.connectionInfo.ipAddress)
-            if (ip == "0.0.0.0" || ip.isEmpty()) "192.168.43.1" else ip
-        } catch (e: Exception) {
-            "192.168.43.1"
-        }
-    }
-
-    private fun startLocalHttpServer() {
-        try {
-            localServer = LocalHttpServer(PORT)
-            localServer?.start()
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-    }
-
-    private inner class LocalHttpServer(port: Int) : NanoHTTPD(port) {
-        override fun serve(session: IHTTPSession): Response {
-            val uri = session.uri
-
-            // توليد ملف M3U مقياسي صالح دائماً للـ VLC والمستقبلات
-            if (uri.endsWith(".m3u") || uri.endsWith(".m3u8") || uri == "/live") {
-                val ip = getLocalIpAddress()
-                val sb = java.lang.StringBuilder()
-                sb.append("#EXTM3U\n")
-
-                if (playlist.isEmpty()) {
-                    // إذا كانت القائمة فارغة، نرجع عنصراً تجريبياً حتى لا يفشل VLC
-                    sb.append("#EXTINF:-1, Waiting for WhatsApp videos...\n")
-                    sb.append("http://$ip:$PORT/ping\n")
-                } else {
-                    playlist.forEachIndexed { idx, seg ->
-                        sb.append("#EXTINF:-1, ${seg.name}\n")
-                        sb.append("http://$ip:$PORT/video/$idx\n")
-                    }
-                }
-
-                val res = newFixedLengthResponse(Response.Status.OK, "text/plain", sb.toString())
-                res.addHeader("Access-Control-Allow-Origin", "*")
-                return res
-            }
-
-            if (uri == "/ping") {
-                val res = newFixedLengthResponse(Response.Status.OK, "text/plain", "Server is live")
-                res.addHeader("Access-Control-Allow-Origin", "*")
-                return res
-            }
-
-            if (uri.startsWith("/video/")) {
-                val idxStr = uri.substringAfter("/video/")
-                val idx = idxStr.toIntOrNull() ?: 0
-                if (idx < playlist.size) {
-                    val seg = playlist[idx]
-                    return try {
-                        val inputStream: InputStream? = contentResolver.openInputStream(seg.uri)
-                        val res = newChunkedResponse(Response.Status.OK, "video/mp4", inputStream)
-                        res.addHeader("Access-Control-Allow-Origin", "*")
-                        res.addHeader("Accept-Ranges", "bytes")
-                        res
-                    } catch (e: Exception) {
-                        newFixedLengthResponse(Response.Status.NOT_FOUND, MIME_PLAINTEXT, "File Error")
-                    }
-                }
-            }
-
-            return newFixedLengthResponse(Response.Status.NOT_FOUND, MIME_PLAINTEXT, "Not Found")
         }
     }
 }
