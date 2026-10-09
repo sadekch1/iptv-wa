@@ -33,10 +33,7 @@ import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 
 /**
- * مشغّل IPTV يعمل بواتساب فقط (بدون صلاحية إنترنت):
- *  1) يرسل أمر .playm3u إلى البوت عبر واتساب (رابط wa.me جاهز، تضغط إرسال).
- *  2) البوت يسجّل البث ويرسل أجزاء قصيرة كمستندات mp4.
- *  3) التطبيق يراقب مجلد "WhatsApp Documents" ويشغّل الأجزاء الجديدة بالتتابع.
+ * مشغّل يلتقط ويشغّل أي ملف مبعوث إلى المجلد المراقَب كبث حي متتابع.
  */
 class MainActivity : AppCompatActivity() {
 
@@ -44,6 +41,8 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var player: ExoPlayer
     private lateinit var etBot: EditText
+    private lateinit var etCmd: EditText
+    private lateinit var etStop: EditText
     private lateinit var etUrl: EditText
     private lateinit var etMin: EditText
     private lateinit var etSeg: EditText
@@ -88,8 +87,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-    // ───────────────────────── دورة الحياة ─────────────────────────
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -126,8 +123,6 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
     }
 
-    // ───────────────────────── الواجهة ─────────────────────────
-
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
     private fun field(hint: String, type: Int, text: String = ""): EditText =
@@ -162,19 +157,29 @@ class MainActivity : AppCompatActivity() {
         }
 
         etBot = field(
-            "رقم البوت مع رمز الدولة بدون + (فارغ = اختيار جهة اتصال)",
+            "رقم المستلِم/البوت (فارغ = اختيار جهة اتصال)",
             InputType.TYPE_CLASS_PHONE,
             prefs.getString("bot", "") ?: ""
         )
+        etCmd = field(
+            "قالب النص/الأمر: استخدم {url} {min} {seg}",
+            InputType.TYPE_CLASS_TEXT,
+            prefs.getString("cmd", ".stream {url} {min} {seg}") ?: ""
+        )
+        etStop = field(
+            "أمر الإيقاف (اتركه فارغاً إن لم يوجد)",
+            InputType.TYPE_CLASS_TEXT,
+            prefs.getString("stop", ".stopstream") ?: ""
+        )
         etUrl = field(
-            "رابط البث (m3u8)",
+            "رابط البث أو اسم المحتوى المطلوب",
             InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
         )
-        etMin = field("المدة الكلية بالدقائق", InputType.TYPE_CLASS_NUMBER, "60")
-        etSeg = field("مدة كل جزء بالدقائق (1 = أقل تأخير)", InputType.TYPE_CLASS_NUMBER, "1")
+        etMin = field("المدة الكلية بالدقائق ({min})", InputType.TYPE_CLASS_NUMBER, "60")
+        etSeg = field("مدة كل جزء بالدقائق ({seg})", InputType.TYPE_CLASS_NUMBER, "1")
 
         cbDelete = CheckBox(this).apply {
-            text = "حذف الأجزاء بعد تشغيلها (يوفر المساحة)"
+            text = "حذف أي ملف فور الانتهاء من تشغيله"
             isChecked = true
         }
 
@@ -182,13 +187,15 @@ class MainActivity : AppCompatActivity() {
         tvStatus = TextView(this).apply { setPadding(0, dp(8), 0, 0) }
 
         form.addView(etBot)
+        form.addView(etCmd)
+        form.addView(etStop)
         form.addView(etUrl)
         form.addView(etMin)
         form.addView(etSeg)
         form.addView(cbDelete)
-        form.addView(button("1) اختيار مجلد WhatsApp Documents") { pickFolder.launch(null) })
+        form.addView(button("1) اختيار المجلد الذي تنزل فيه الملفات") { pickFolder.launch(null) })
         form.addView(tvFolder)
-        form.addView(button("2) ابدأ — يفتح واتساب، اضغط إرسال") { start() })
+        form.addView(button("2) بدء مراقبة المجلد وتشغيل البث") { start() })
         form.addView(button("إيقاف") { stop() })
         form.addView(tvStatus)
 
@@ -206,7 +213,7 @@ class MainActivity : AppCompatActivity() {
         tvFolder.text = if (t == null) {
             "لم يُختر مجلد بعد"
         } else {
-            "المجلد: " + DocumentsContract.getTreeDocumentId(t).substringAfter(':')
+            "المجلد المراقَب: " + DocumentsContract.getTreeDocumentId(t).substringAfter(':')
         }
     }
 
@@ -214,27 +221,38 @@ class MainActivity : AppCompatActivity() {
         tvStatus.text = "في الانتظار: ${player.mediaItemCount}  |  شُغّل: $played  |  وصل: $arrived"
     }
 
-    // ───────────────────────── الأوامر ─────────────────────────
-
     private fun start() {
+        val tpl = etCmd.text.toString().trim()
         val url = etUrl.text.toString().trim()
         val min = etMin.text.toString().toIntOrNull() ?: 0
         val seg = etSeg.text.toString().toIntOrNull() ?: 0
 
-        if (!url.startsWith("http")) return toast("أدخل رابط البث أولاً")
-        if (min !in 1..360 || seg < 1 || seg > min) {
-            return toast("المدة بين 1 و360، ومدة الجزء بين 1 والمدة الكلية")
-        }
-        if (treeUri == null) return toast("اختر مجلد WhatsApp Documents أولاً")
+        if (treeUri == null) return toast("اختر مجلد الاستقبال أولاً")
+
+        prefs.edit()
+            .putString("cmd", tpl)
+            .putString("stop", etStop.text.toString().trim())
+            .apply()
+
+        val cmd = tpl
+            .replace("{url}", url)
+            .replace("{min}", min.toString())
+            .replace("{seg}", seg.toString())
 
         startWatching()
-        sendViaWhatsApp(".playm3u $url $min $seg")
+        if (cmd.isNotEmpty()) {
+            sendViaWhatsApp(cmd)
+        }
     }
 
     private fun stop() {
-        sendViaWhatsApp(".stopplaym3u")
-        // نترك المراقبة دقيقة أخرى لاستلام الجزء الأخير الذي سيرسله البوت
-        exec.schedule({ watcher?.cancel(false) }, 60, TimeUnit.SECONDS)
+        val stopCmd = etStop.text.toString().trim()
+        if (stopCmd.isNotEmpty()) {
+            sendViaWhatsApp(stopCmd)
+            exec.schedule({ watcher?.cancel(false) }, 60, TimeUnit.SECONDS)
+        } else {
+            watcher?.cancel(false)
+        }
     }
 
     private fun sendViaWhatsApp(text: String) {
@@ -251,10 +269,8 @@ class MainActivity : AppCompatActivity() {
             } catch (_: ActivityNotFoundException) {
             }
         }
-        toast("واتساب غير مثبّت")
+        toast("تطبيق واتساب غير مثبّت")
     }
-
-    // ───────────────────────── المراقبة والتشغيل ─────────────────────────
 
     private fun startWatching() {
         watcher?.cancel(false)
@@ -265,17 +281,18 @@ class MainActivity : AppCompatActivity() {
 
         val tree = treeUri ?: return
 
-        // لقطة بالملفات الموجودة الآن: أي ملف يظهر بعدها يُعدّ جزءاً جديداً
         exec.execute {
             known.clear()
             lastSize.clear()
             try {
+                // حفظ قائمة الملفات المودعة سابقاً للبدء بالملفات التي تصل حديثاً فقط
                 listSegments(tree).forEach { known.add(it.uri.toString()) }
             } catch (e: Exception) {
                 ui.post { tvStatus.text = "تعذّر قراءة المجلد: ${e.message}" }
             }
         }
-        watcher = exec.scheduleWithFixedDelay({ poll() }, 3, 3, TimeUnit.SECONDS)
+        // فحص المجلد كل ثانيتين لالتقاط الملفات فور وصولها
+        watcher = exec.scheduleWithFixedDelay({ poll() }, 2, 2, TimeUnit.SECONDS)
     }
 
     private fun poll() {
@@ -283,7 +300,7 @@ class MainActivity : AppCompatActivity() {
             val tree = treeUri ?: return
             val fresh = listSegments(tree).filter { it.uri.toString() !in known }
 
-            // الجزء جاهز عندما يثبت حجمه بين فحصين متتاليين (انتهى تنزيله)
+            // التثبت من اكتمال التنزيل عبر ثبات الحجم بين فحصين
             val ready = fresh.filter { it.size > 0 && lastSize[it.uri.toString()] == it.size }
             fresh.forEach { lastSize[it.uri.toString()] = it.size }
 
@@ -293,14 +310,17 @@ class MainActivity : AppCompatActivity() {
                 ui.post { enqueue(s) }
             }
         } catch (e: Exception) {
-            ui.post { tvStatus.text = "خطأ في قراءة المجلد: ${e.message}" }
+            ui.post { tvStatus.text = "خطأ أثناء قراءة المجلد: ${e.message}" }
         }
     }
 
     private fun enqueue(s: Seg) {
         val wasEnded = player.playbackState == Player.STATE_ENDED
         player.addMediaItem(
-            MediaItem.Builder().setUri(s.uri).setMediaId(s.uri.toString()).build()
+            MediaItem.Builder()
+                .setUri(s.uri)
+                .setMediaId(s.uri.toString())
+                .build()
         )
         arrived++
         if (player.playbackState == Player.STATE_IDLE) player.prepare()
@@ -326,7 +346,9 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // استعلام واحد يجلب كل الملفات بدل استعلام لكل ملف (أسرع بكثير)
+    /**
+     * استعلام شامل يجلب كل العناصر والملفات المبعوثة دون النظر إلى الامتداد أو الاسم
+     */
     private fun listSegments(tree: Uri): List<Seg> {
         val parentId = DocumentsContract.getTreeDocumentId(tree)
         val children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, parentId)
@@ -335,12 +357,17 @@ class MainActivity : AppCompatActivity() {
             Document.COLUMN_DOCUMENT_ID,
             Document.COLUMN_DISPLAY_NAME,
             Document.COLUMN_LAST_MODIFIED,
-            Document.COLUMN_SIZE
+            Document.COLUMN_SIZE,
+            Document.COLUMN_MIME_TYPE
         )
         contentResolver.query(children, cols, null, null, null)?.use { c ->
             while (c.moveToNext()) {
                 val name = c.getString(1) ?: continue
-                if (!name.endsWith(".mp4", ignoreCase = true)) continue
+                val mime = c.getString(4) ?: ""
+
+                // استثناء المجلدات الفرعية والملفات النظامية المخفية التي تبدأ بـ .
+                if (mime == Document.MIME_TYPE_DIR || name.startsWith(".")) continue
+
                 out.add(
                     Seg(
                         DocumentsContract.buildDocumentUriUsingTree(tree, c.getString(0)),
