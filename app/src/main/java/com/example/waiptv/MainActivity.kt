@@ -23,6 +23,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
@@ -30,6 +31,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 
+@UnstableApi
 class MainActivity : AppCompatActivity() {
 
     private data class Seg(val uri: Uri, val name: String, val modified: Long, val size: Long)
@@ -53,7 +55,7 @@ class MainActivity : AppCompatActivity() {
     private var arrived = 0
     private var played = 0
 
-    // أنماط ملاءمة الشاشة
+    // أنماط ملاءمة أبعاد الشاشة
     private val resizeModes = arrayOf(
         AspectRatioFrameLayout.RESIZE_MODE_FIT to "ملاءمة (Fit)",
         AspectRatioFrameLayout.RESIZE_MODE_FILL to "تعبئة الشاشة (Fill)",
@@ -68,12 +70,12 @@ class MainActivity : AppCompatActivity() {
                 try {
                     contentResolver.takePersistableUriPermission(
                         uri,
-                        Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                        android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION
                     )
                 } catch (_: Exception) {
                     try {
                         contentResolver.takePersistableUriPermission(
-                            uri, Intent.FLAG_GRANT_READ_URI_PERMISSION
+                            uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
                         )
                     } catch (_: Exception) {
                     }
@@ -128,10 +130,9 @@ class MainActivity : AppCompatActivity() {
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.parseColor("#121212")) // خلفية داكنة حديثة
+            setBackgroundColor(Color.parseColor("#121212"))
         }
 
-        // 1) مشغّل الفيديو
         playerView = PlayerView(this).apply {
             this.player = this@MainActivity.player
             setBackgroundColor(Color.BLACK)
@@ -139,7 +140,6 @@ class MainActivity : AppCompatActivity() {
         }
         root.addView(playerView, LinearLayout.LayoutParams(match, dp(250)))
 
-        // 2) جسم التحكم والأزرار
         val form = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(20), dp(16), dp(20), dp(20))
@@ -151,22 +151,18 @@ class MainActivity : AppCompatActivity() {
             setPadding(0, 0, 0, dp(12))
         }
 
-        // زر اختيار المجلد
         val btnPick = createStyledButton("📁 اختيار المجلد المراقَب", "#2196F3") {
             pickFolder.launch(null)
         }
 
-        // زر تغيير نمط الأبعاد ملء الشاشة
         btnResize = createStyledButton("📺 الأبعاد: ملاءمة (Fit)", "#424242") {
             toggleResizeMode()
         }
 
-        // زر بدء المراقبة
         val btnStart = createStyledButton("▶ بدء المراقبة والتشغيل", "#4CAF50") {
             start()
         }
 
-        // زر الإيقاف
         val btnStop = createStyledButton("⏹ إيقاف المراقبة", "#F44336") {
             stop()
         }
@@ -221,7 +217,7 @@ class MainActivity : AppCompatActivity() {
         val (mode, modeName) = resizeModes[currentResizeIdx]
         playerView.resizeMode = mode
         btnResize.text = "📺 الأبعاد: $modeName"
-        toast("تم تغيير الوضع إلى: $modeName")
+        toast("الوضع الحالي: $modeName")
     }
 
     private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
