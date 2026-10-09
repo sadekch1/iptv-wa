@@ -24,7 +24,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
-import androidx.activity.addCallback
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.SwitchCompat
@@ -215,12 +215,16 @@ class MainActivity : AppCompatActivity() {
             }
         })
 
-        onBackPressedDispatcher.addCallback(this) {
-            if (isFullScreen) toggleFullScreen() else {
-                isEnabled = false
-                onBackPressedDispatcher.onBackPressed()
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                if (isFullScreen) {
+                    toggleFullScreen()
+                } else {
+                    isEnabled = false
+                    onBackPressedDispatcher.onBackPressed()
+                }
             }
-        }
+        })
 
         applyTheme()
     }
