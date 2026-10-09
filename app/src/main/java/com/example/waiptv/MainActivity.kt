@@ -32,9 +32,6 @@ import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 
-/**
- * مشغّل يلتقط ويشغّل أي ملف مبعوث إلى المجلد المراقَب كبث حي متتابع.
- */
 class MainActivity : AppCompatActivity() {
 
     private data class Seg(val uri: Uri, val name: String, val modified: Long, val size: Long)
@@ -57,11 +54,9 @@ class MainActivity : AppCompatActivity() {
 
     private var treeUri: Uri? = null
 
-    // تُستخدم من خيط exec فقط
     private val known = HashSet<String>()
     private val lastSize = HashMap<String, Long>()
 
-    // تُستخدم من الخيط الرئيسي فقط
     private var arrived = 0
     private var played = 0
 
@@ -193,7 +188,7 @@ class MainActivity : AppCompatActivity() {
         form.addView(etMin)
         form.addView(etSeg)
         form.addView(cbDelete)
-        form.addView(button("1) اختيار المجلد الذي تنزل فيه الملفات") { pickFolder.launch(null) })
+        form.addView(button("1) اختيار المجلد (Sent أو WhatsApp Documents)") { pickFolder.launch(null) })
         form.addView(tvFolder)
         form.addView(button("2) بدء مراقبة المجلد وتشغيل البث") { start() })
         form.addView(button("إيقاف") { stop() })
@@ -279,26 +274,17 @@ class MainActivity : AppCompatActivity() {
         played = 0
         updateStatus()
 
-        val tree = treeUri ?: return
+        // تفريغ السجلات للبدء بقراءة أي ملفات متواجدة داخل المجلد فوراً
+        known.clear()
+        lastSize.clear()
 
-        exec.execute {
-            known.clear()
-            lastSize.clear()
-            try {
-                // حفظ قائمة الملفات المودعة سابقاً للبدء بالملفات التي تصل حديثاً فقط
-                listSegments(tree).forEach { known.add(it.uri.toString()) }
-            } catch (e: Exception) {
-                ui.post { tvStatus.text = "تعذّر قراءة المجلد: ${e.message}" }
-            }
-        }
-        // فحص المجلد كل ثانيتين لالتقاط الملفات فور وصولها
         watcher = exec.scheduleWithFixedDelay({ poll() }, 2, 2, TimeUnit.SECONDS)
     }
 
     private fun poll() {
         try {
             val tree = treeUri ?: return
-            val fresh = listSegments(tree).filter { it.uri.toString() !in known }
+            val fresh = listSegmentsRecursive(tree).filter { it.uri.toString() !in known }
 
             // التثبت من اكتمال التنزيل عبر ثبات الحجم بين فحصين
             val ready = fresh.filter { it.size > 0 && lastSize[it.uri.toString()] == it.size }
@@ -347,12 +333,17 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * استعلام شامل يجلب كل العناصر والملفات المبعوثة دون النظر إلى الامتداد أو الاسم
+     * استعلام يجلب كافة الملفات بما في ذلك الملفات الموجودة داخل مجلدات فرعية مثل Sent
      */
-    private fun listSegments(tree: Uri): List<Seg> {
-        val parentId = DocumentsContract.getTreeDocumentId(tree)
-        val children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, parentId)
+    private fun listSegmentsRecursive(tree: Uri): List<Seg> {
         val out = ArrayList<Seg>()
+        val parentId = DocumentsContract.getTreeDocumentId(tree)
+        scanFolder(tree, parentId, out)
+        return out
+    }
+
+    private fun scanFolder(tree: Uri, parentId: String, out: ArrayList<Seg>) {
+        val children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, parentId)
         val cols = arrayOf(
             Document.COLUMN_DOCUMENT_ID,
             Document.COLUMN_DISPLAY_NAME,
@@ -362,22 +353,25 @@ class MainActivity : AppCompatActivity() {
         )
         contentResolver.query(children, cols, null, null, null)?.use { c ->
             while (c.moveToNext()) {
+                val docId = c.getString(0) ?: continue
                 val name = c.getString(1) ?: continue
                 val mime = c.getString(4) ?: ""
 
-                // استثناء المجلدات الفرعية والملفات النظامية المخفية التي تبدأ بـ .
-                if (mime == Document.MIME_TYPE_DIR || name.startsWith(".")) continue
-
-                out.add(
-                    Seg(
-                        DocumentsContract.buildDocumentUriUsingTree(tree, c.getString(0)),
-                        name,
-                        c.getLong(2),
-                        c.getLong(3)
+                if (mime == Document.MIME_TYPE_DIR) {
+                    // الانتقال ودخول المجلدات الفرعية (مثل مجلد Sent)
+                    scanFolder(tree, docId, out)
+                } else if (!name.startsWith(".")) {
+                    // حفظ كل الملفات بغض النظر عن النوع أو الامتداد
+                    out.add(
+                        Seg(
+                            DocumentsContract.buildDocumentUriUsingTree(tree, docId),
+                            name,
+                            c.getLong(2),
+                            c.getLong(3)
+                        )
                     )
-                )
+                }
             }
         }
-        return out
     }
 }
