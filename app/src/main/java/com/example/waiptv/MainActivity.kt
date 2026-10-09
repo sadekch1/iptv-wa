@@ -65,11 +65,9 @@ class MainActivity : AppCompatActivity() {
     private var isFullScreen = false
 
     private val resizeModes = arrayOf(
-        AspectRatioFrameLayout.RESIZE_MODE_FIT to "ملاءمة (Fit)",
         AspectRatioFrameLayout.RESIZE_MODE_FILL to "تعبئة الشاشة (Fill)",
         AspectRatioFrameLayout.RESIZE_MODE_ZOOM to "تكبير/قص (Zoom)",
-        AspectRatioFrameLayout.RESIZE_MODE_FIXED_WIDTH to "العرض ثابت",
-        AspectRatioFrameLayout.RESIZE_MODE_FIXED_HEIGHT to "الارتفاع ثابت"
+        AspectRatioFrameLayout.RESIZE_MODE_FIT to "ملاءمة (Fit)"
     )
     private var currentResizeIdx = 0
 
@@ -97,6 +95,9 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        
+        // 1) إخفاء شريط العنوان العلوي التابع للتطبيق كلياً
+        supportActionBar?.hide()
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         player = ExoPlayer.Builder(this).build()
@@ -133,7 +134,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onBackPressed() {
         if (isFullScreen) {
-            toggleFullScreen() // الخروج من ملء الشاشة عند الضغط على زر الرجوع
+            toggleFullScreen()
         } else {
             super.onBackPressed()
         }
@@ -147,18 +148,17 @@ class MainActivity : AppCompatActivity() {
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.parseColor("#121212"))
+            setBackgroundColor(Color.BLACK)
         }
 
-        // الحاوية الخاصة بمشغّل الفيديو
         playerContainer = FrameLayout(this)
         
         playerView = PlayerView(this).apply {
             this.player = this@MainActivity.player
             setBackgroundColor(Color.BLACK)
-            resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
+            resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FILL
             
-            // زر الشاشة الكاملة الداخلي للمشغل
+            // عند النقر على أزرار التكبير في المشغّل
             setFullscreenButtonClickListener {
                 toggleFullScreen()
             }
@@ -171,10 +171,10 @@ class MainActivity : AppCompatActivity() {
 
         root.addView(playerContainer, LinearLayout.LayoutParams(match, dp(240)))
 
-        // عناصر التحكم والأزرار
         val form = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(20), dp(16), dp(20), dp(20))
+            setBackgroundColor(Color.parseColor("#121212"))
         }
 
         tvFolder = TextView(this).apply {
@@ -187,11 +187,11 @@ class MainActivity : AppCompatActivity() {
             pickFolder.launch(null)
         }
 
-        btnFullscreen = createStyledButton("⛶ ملء الشاشة (Full Screen)", "#9C27B0") {
+        btnFullscreen = createStyledButton("⛶ ملء الشاشة المباشر (Full Screen)", "#9C27B0") {
             toggleFullScreen()
         }
 
-        btnResize = createStyledButton("📺 الأبعاد: ملاءمة (Fit)", "#424242") {
+        btnResize = createStyledButton("📺 الأبعاد: تعبئة الشاشة (Fill)", "#424242") {
             toggleResizeMode()
         }
 
@@ -253,18 +253,16 @@ class MainActivity : AppCompatActivity() {
     private fun toggleFullScreen() {
         isFullScreen = !isFullScreen
         if (isFullScreen) {
-            // إخفاء الأزرار والتحكم للبدء بالوضع الكامل
+            // 2) إخفاء كافة القوائم والأزرار للوصول لـ VLC/MPV Pure Fullscreen
             controlsLayout.visibility = View.GONE
             requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
             
-            // توسيع المشغل ليشمل الشاشة بأكملها
             val params = playerContainer.layoutParams as LinearLayout.LayoutParams
             params.height = ViewGroup.LayoutParams.MATCH_PARENT
             playerContainer.layoutParams = params
 
             hideSystemUi()
         } else {
-            // العودة للوضع العادي
             controlsLayout.visibility = View.VISIBLE
             requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
             
