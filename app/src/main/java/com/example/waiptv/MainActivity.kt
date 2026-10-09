@@ -32,6 +32,8 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
+import fi.iki.elonen.NanoHTTPD
+import java.io.InputStream
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
@@ -50,6 +52,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvFolder: TextView
     private lateinit var btnResize: Button
     private lateinit var btnFullscreen: Button
+    private lateinit var btnDlnaCast: Button
 
     private val prefs by lazy { getSharedPreferences("waiptv", Context.MODE_PRIVATE) }
     private val ui = Handler(Looper.getMainLooper())
@@ -63,6 +66,10 @@ class MainActivity : AppCompatActivity() {
     private var arrived = 0
     private var played = 0
     private var isFullScreen = false
+    private var isDlnaEnabled = false
+
+    private var localServer: LocalHttpServer? = null
+    private val PORT = 8080
 
     private val resizeModes = arrayOf(
         AspectRatioFrameLayout.RESIZE_MODE_FILL to "تعبئة الشاشة (Fill)",
@@ -96,9 +103,10 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
-        // 1) إخفاء شريط العنوان العلوي التابع للتطبيق كلياً
         supportActionBar?.hide()
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+
+        startLocalHttpServer()
 
         player = ExoPlayer.Builder(this).build()
         player.addListener(object : Player.Listener {
@@ -129,6 +137,7 @@ class MainActivity : AppCompatActivity() {
         watcher?.cancel(false)
         exec.shutdownNow()
         player.release()
+        localServer?.stop()
         super.onDestroy()
     }
 
@@ -158,7 +167,6 @@ class MainActivity : AppCompatActivity() {
             setBackgroundColor(Color.BLACK)
             resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FILL
             
-            // عند النقر على أزرار التكبير في المشغّل
             setFullscreenButtonClickListener {
                 toggleFullScreen()
             }
@@ -185,6 +193,10 @@ class MainActivity : AppCompatActivity() {
 
         val btnPick = createStyledButton("📁 اختيار المجلد المراقَب", "#2196F3") {
             pickFolder.launch(null)
+        }
+
+        btnDlnaCast = createStyledButton("📡 بث عبر DLNA: معطّل", "#FF9800") {
+            toggleDlnaCast()
         }
 
         btnFullscreen = createStyledButton("⛶ ملء الشاشة المباشر (Full Screen)", "#9C27B0") {
@@ -219,6 +231,7 @@ class MainActivity : AppCompatActivity() {
 
         form.addView(btnPick)
         form.addView(tvFolder)
+        form.addView(btnDlnaCast)
         form.addView(btnFullscreen)
         form.addView(btnResize)
         form.addView(cbDelete)
@@ -250,10 +263,22 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun toggleDlnaCast() {
+        isDlnaEnabled = !isDlnaEnabled
+        if (isDlnaEnabled) {
+            btnDlnaCast.text = "📡 بث عبر DLNA: مفّعل (Port $PORT)"
+            btnDlnaCast.setBackgroundColor(Color.parseColor("#E65100"))
+            toast("تم تفعيل السيرفر المحلي للبث عبر DLNA/Hotspot")
+        } else {
+            btnDlnaCast.text = "📡 بث عبر DLNA: معطّل"
+            btnDlnaCast.setBackgroundColor(Color.parseColor("#FF9800"))
+            toast("تم تعطيل البث الخارجي")
+        }
+    }
+
     private fun toggleFullScreen() {
         isFullScreen = !isFullScreen
         if (isFullScreen) {
-            // 2) إخفاء كافة القوائم والأزرار للوصول لـ VLC/MPV Pure Fullscreen
             controlsLayout.visibility = View.GONE
             requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
             
@@ -430,6 +455,29 @@ class MainActivity : AppCompatActivity() {
                         )
                     )
                 }
+            }
+        }
+    }
+
+    // --- سيرفر الـ HTTP المحلي الخفيف لتمرير المقاطع للأجهزة الخارجية (Geant / TV) ---
+    private fun startLocalHttpServer() {
+        try {
+            localServer = LocalHttpServer(PORT)
+            localServer?.start()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    private inner class LocalHttpServer(port: Int) : NanoHTTPD(port) {
+        override fun serve(session: IHTTPSession): Response {
+            val uri = session.uri
+            val segmentUri = Uri.parse(uri.substringAfter("/stream/"))
+            return try {
+                val inputStream: InputStream? = contentResolver.openInputStream(segmentUri)
+                newChunkedResponse(Response.Status.OK, "video/mp4", inputStream)
+            } catch (e: Exception) {
+                newFixedLengthResponse(Response.Status.NOT_FOUND, MIME_PLAINTEXT, "File not found")
             }
         }
     }
