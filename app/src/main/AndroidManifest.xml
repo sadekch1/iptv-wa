@@ -15,11 +15,11 @@
     <application
         android:allowBackup="true"
         android:label="WA IPTV"
-        android:theme="@style/Theme.AppCompat.DayNight.DarkActionBar">
+        android:theme="@style/Theme.AppCompat.DayNight.NoActionBar">
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:configChanges="orientation|screenSize|keyboardHidden">
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|smallestScreenSize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
