@@ -55,12 +55,13 @@ class MainActivity : AppCompatActivity() {
     private var arrived = 0
     private var played = 0
 
-    // أنماط ملاءمة أبعاد الشاشة
+    // أنماط ملاءمة أبعاد الشاشة المتوافقة تماماً مع Media3
     private val resizeModes = arrayOf(
         AspectRatioFrameLayout.RESIZE_MODE_FIT to "ملاءمة (Fit)",
         AspectRatioFrameLayout.RESIZE_MODE_FILL to "تعبئة الشاشة (Fill)",
         AspectRatioFrameLayout.RESIZE_MODE_ZOOM to "تكبير/قص (Zoom)",
-        AspectRatioFrameLayout.RESIZE_MODE_STRETCH to "تمطيط (Stretch)"
+        AspectRatioFrameLayout.RESIZE_MODE_FIXED_WIDTH to "العرض ثابت (Fixed Width)",
+        AspectRatioFrameLayout.RESIZE_MODE_FIXED_HEIGHT to "الارتفاع ثابت (Fixed Height)"
     )
     private var currentResizeIdx = 0
 
